@@ -88,6 +88,12 @@ async def _run_agent_job(job_id: str, req: AnalyzeRequest) -> None:
         RUNS[job_id].setdefault("live_logs", []).append(line)
 
     try:
+        # ── Sanitize repo — strip full GitHub URLs, trailing slashes, spaces ─
+        repo = req.repo.strip().rstrip("/")
+        if "github.com/" in repo:
+            repo = repo.split("github.com/")[-1].rstrip("/")
+        req.repo = repo
+
         push_log(f"Agent started for {req.repo}")
         push_log(f"Platform: {req.platform} | PR: {req.pr_number or 'none'} | Run: {req.run_id or 'none'}")
 
