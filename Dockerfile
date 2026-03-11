@@ -12,8 +12,9 @@ COPY ui/          ./ui/
 COPY main.py      ./main.py
 COPY .env.example ./.env.example
 
-# Expose dashboard port (Railway/Render inject $PORT at runtime)
+# Railway/Render set $PORT at runtime
 EXPOSE 8000
 
-# Start the dashboard — $PORT is set by Railway/Render, fallback 8000
-CMD ["sh", "-c", "uvicorn ui.api:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Start server — use $PORT if set (Railway/Render), otherwise 8000
+CMD ["sh", "-c", "uvicorn ui.api:app --host 0.0.0.0 --port ${PORT:-8000} --timeout-keep-alive 75"]
+

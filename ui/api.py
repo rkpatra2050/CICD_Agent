@@ -33,7 +33,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # ── Add parent to path so we can import agent ────────────────────────────────
@@ -55,6 +54,11 @@ app.add_middleware(
 # ── In-memory store (use a DB in production) ─────────────────────────────────
 RUNS: Dict[str, Dict[str, Any]] = {}          # job_id → run state
 LIVE_LOGS: Dict[str, List[str]] = {}          # job_id → log lines (SSE)
+
+# ── Health check — responds instantly, no agent imports ───────────────────────
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "version": "1.0.0", "runs": len(RUNS)}
 
 # ── Request/Response models ───────────────────────────────────────────────────
 
@@ -150,11 +154,6 @@ async def _run_agent_job(job_id: str, req: AnalyzeRequest) -> None:
 
 
 # ── API Routes ────────────────────────────────────────────────────────────────
-
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "version": "1.0.0", "runs": len(RUNS)}
-
 
 @app.post("/api/analyze")
 async def analyze(req: AnalyzeRequest, background_tasks: BackgroundTasks):
