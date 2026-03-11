@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>🤖 CI/CD Error Analysis Agent</title>
+<style>
+/* ── Reset & base ────────────────────────────────────────────────────── */
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0d1117;--surface:#161b22;--surface2:#21262d;--border:#30363d;
+  --text:#e6edf3;--muted:#8b949e;--accent:#238636;--accent2:#1f6feb;
+  --danger:#da3633;--warn:#d29922;--purple:#8957e5;
+  --green:#3fb950;--blue:#58a6ff;--orange:#f0883e;
+  --radius:8px;--font:'Segoe UI',system-ui,sans-serif;
+}
+body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:100vh}
+a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+
+/* ── Layout ──────────────────────────────────────────────────────────── */
+.app{display:grid;grid-template-rows:64px 1fr;min-height:100vh}
+.nav{background:var(--surface);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 24px;gap:16px;position:sticky;top:0;z-index:100}
+.nav-logo{font-size:1.2rem;font-weight:700;display:flex;align-items:center;gap:8px}
+.nav-logo span{color:var(--blue)}
+.nav-links{display:flex;gap:4px;margin-left:auto}
+.nav-links button{background:none;border:none;color:var(--muted);cursor:pointer;
+  padding:6px 12px;border-radius:6px;font-size:.875rem;transition:all .15s}
+.nav-links button:hover,.nav-links button.active{background:var(--surface2);color:var(--text)}
+.main{padding:24px;max-width:1400px;margin:0 auto;width:100%}
+
+/* ── Pages ───────────────────────────────────────────────────────────── */
+.page{display:none}.page.active{display:block}
+
+/* ── Stats bar ───────────────────────────────────────────────────────── */
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:16px;margin-bottom:28px}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+  padding:20px;text-align:center;transition:transform .15s}
+.stat-card:hover{transform:translateY(-2px)}
+.stat-num{font-size:2.2rem;font-weight:700;line-height:1}
+.stat-label{font-size:.8rem;color:var(--muted);margin-top:6px;text-transform:uppercase;letter-spacing:.05em}
+.stat-card.green .stat-num{color:var(--green)}
+.stat-card.blue .stat-num{color:var(--blue)}
+.stat-card.orange .stat-num{color:var(--orange)}
+.stat-card.purple .stat-num{color:var(--purple)}
+.stat-card.red .stat-num{color:var(--danger)}
+
+/* ── Cards ───────────────────────────────────────────────────────────── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;margin-bottom:20px}
+.card-title{font-size:1rem;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+
+/* ── Form ────────────────────────────────────────────────────────────── */
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:700px){.form-grid{grid-template-columns:1fr}}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font-size:.825rem;color:var(--muted);font-weight:500}
+.field input,.field select,.field textarea{
+  background:var(--surface2);border:1px solid var(--border);color:var(--text);
+  border-radius:6px;padding:10px 12px;font-size:.9rem;outline:none;
+  font-family:inherit;transition:border-color .15s}
+.field input:focus,.field select,.field textarea:focus{border-color:var(--blue)}
+.field textarea{resize:vertical;min-height:120px;font-family:monospace;font-size:.8rem}
+.field-full{grid-column:1/-1}
+
+/* ── Buttons ─────────────────────────────────────────────────────────── */
+.btn{display:inline-flex;align-items:center;gap:8px;padding:10px 20px;border-radius:6px;
+  border:none;cursor:pointer;font-size:.9rem;font-weight:500;transition:all .15s;font-family:inherit}
+.btn-primary{background:var(--accent2);color:#fff}.btn-primary:hover{background:#388bfd;transform:translateY(-1px)}
+.btn-success{background:var(--accent);color:#fff}.btn-success:hover{background:#2ea043}
+.btn-danger{background:var(--danger);color:#fff}.btn-danger:hover{background:#f85149}
+.btn-ghost{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover{border-color:var(--blue);color:var(--blue)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important}
+.btn-sm{padding:6px 12px;font-size:.8rem}
+
+/* ── Runs table ──────────────────────────────────────────────────────── */
+.runs-table{width:100%;border-collapse:collapse}
+.runs-table th{text-align:left;font-size:.75rem;color:var(--muted);text-transform:uppercase;
+  letter-spacing:.05em;padding:8px 12px;border-bottom:1px solid var(--border)}
+.runs-table td{padding:12px;border-bottom:1px solid var(--border);font-size:.875rem;vertical-align:middle}
+.runs-table tr:last-child td{border-bottom:none}
+.runs-table tr:hover td{background:var(--surface2)}
+.repo-name{font-weight:600;color:var(--blue)}
+.time-ago{color:var(--muted);font-size:.8rem}
+
+/* ── Status badges ───────────────────────────────────────────────────── */
+.badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:20px;font-size:.75rem;font-weight:600}
+.badge-success{background:#0f3d1d;color:var(--green);border:1px solid #1a5c2a}
+.badge-guide{background:#2a1f00;color:var(--orange);border:1px solid #4a3800}
+.badge-error{background:#2d0f0e;color:var(--danger);border:1px solid #5a1f1e}
+.badge-running{background:#0c2a4a;color:var(--blue);border:1px solid #1a4a7a}
+.badge-queued{background:#1e1e2e;color:var(--muted);border:1px solid var(--border)}
+
+/* ── Terminal / log viewer ───────────────────────────────────────────── */
+.terminal{background:#0a0c10;border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;font-family:'Courier New',monospace;font-size:.8rem;line-height:1.6;
+  max-height:400px;overflow-y:auto;color:#d0d7de}
+.terminal .log-ts{color:#484f58}
+.terminal .log-ok{color:var(--green)}
+.terminal .log-err{color:var(--danger)}
+.terminal .log-warn{color:var(--orange)}
+.terminal .log-info{color:var(--blue)}
+.terminal-header{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.dot{width:12px;height:12px;border-radius:50%}
+
+/* ── Live log stream ─────────────────────────────────────────────────── */
+#live-log{background:#0a0c10;border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;font-family:monospace;font-size:.8rem;line-height:1.7;
+  max-height:360px;overflow-y:auto;color:#d0d7de;white-space:pre-wrap;word-break:break-all}
+
+/* ── Run detail modal ────────────────────────────────────────────────── */
+.modal-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:200;
+  align-items:center;justify-content:center}
+.modal-backdrop.open{display:flex}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;
+  padding:28px;max-width:860px;width:90%;max-height:85vh;overflow-y:auto;position:relative}
+.modal-close{position:absolute;top:16px;right:16px;background:none;border:none;
+  color:var(--muted);cursor:pointer;font-size:1.4rem;line-height:1}
+.modal-close:hover{color:var(--text)}
+.modal h2{margin-bottom:20px;font-size:1.1rem}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px}
+.detail-item{background:var(--surface2);padding:12px;border-radius:6px}
+.detail-item .dk{font-size:.75rem;color:var(--muted);margin-bottom:4px}
+.detail-item .dv{font-size:.9rem;font-weight:500;word-break:break-all}
+
+/* ── Error list ──────────────────────────────────────────────────────── */
+.error-list{list-style:none;display:flex;flex-direction:column;gap:8px}
+.error-item{background:var(--surface2);border-left:3px solid var(--danger);
+  padding:10px 14px;border-radius:0 6px 6px 0;font-size:.85rem}
+.error-item .etype{color:var(--orange);font-weight:600;font-size:.75rem;margin-bottom:3px}
+.error-item .emsg{color:var(--text)}
+.error-item .eloc{color:var(--muted);font-size:.75rem;margin-top:3px;font-family:monospace}
+
+/* ── Solution guide ──────────────────────────────────────────────────── */
+.solution-guide{background:#0a0c10;border:1px solid var(--border);border-radius:var(--radius);
+  padding:16px;font-size:.85rem;white-space:pre-wrap;word-break:break-word;
+  max-height:300px;overflow-y:auto;line-height:1.7;color:#d0d7de}
+
+/* ── Spinner ─────────────────────────────────────────────────────────── */
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);
+  border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ── Pulse dot ───────────────────────────────────────────────────────── */
+.pulse{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);
+  animation:pulse 1.5s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+
+/* ── Empty state ─────────────────────────────────────────────────────── */
+.empty{text-align:center;padding:60px 20px;color:var(--muted)}
+.empty-icon{font-size:3rem;margin-bottom:12px}
+.empty p{font-size:.9rem}
+
+/* ── Section header ──────────────────────────────────────────────────── */
+.section-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px}
+.section-title{font-size:1.1rem;font-weight:600}
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+#toast{position:fixed;bottom:24px;right:24px;background:var(--surface2);border:1px solid var(--border);
+  color:var(--text);padding:12px 20px;border-radius:8px;font-size:.875rem;
+  transform:translateY(100px);opacity:0;transition:all .3s;z-index:999;max-width:340px}
+#toast.show{transform:translateY(0);opacity:1}
+#toast.success{border-color:var(--green);color:var(--green)}
+#toast.error{border-color:var(--danger);color:var(--danger)}
+
+/* ── Tabs ────────────────────────────────────────────────────────────── */
+.tab-bar{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:20px}
+.tab{background:none;border:none;color:var(--muted);cursor:pointer;padding:10px 20px;
+  font-size:.875rem;border-bottom:2px solid transparent;transition:all .15s;font-family:inherit}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--blue);border-bottom-color:var(--blue)}
+
+/* ── Install page ────────────────────────────────────────────────────── */
+.steps{display:flex;flex-direction:column;gap:16px}
+.step{display:flex;gap:16px;align-items:flex-start}
+.step-num{width:32px;height:32px;border-radius:50%;background:var(--accent2);
+  color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;font-size:.9rem}
+.step-body h3{font-size:.95rem;margin-bottom:6px}
+.step-body p,.step-body li{font-size:.875rem;color:var(--muted);line-height:1.6}
+.step-body ul{padding-left:18px}
+code{background:var(--surface2);padding:2px 6px;border-radius:4px;
+  font-family:monospace;font-size:.85rem;color:var(--orange)}
+pre{background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+  padding:14px;font-family:monospace;font-size:.8rem;overflow-x:auto;margin-top:8px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ── Navigation ──────────────────────────────────────────────────────── -->
+<nav class="nav">
+  <div class="nav-logo">🤖 <span>CI/CD Agent</span> Dashboard</div>
+  <div class="nav-links">
+    <button class="active" onclick="showPage('dashboard',this)">📊 Dashboard</button>
+    <button onclick="showPage('analyze',this)">▶️ Analyze</button>
+    <button onclick="showPage('runs',this)">📋 All Runs</button>
+    <button onclick="showPage('install',this)">⚙️ Install</button>
+  </div>
+</nav>
+
+<!-- ── Main ────────────────────────────────────────────────────────────── -->
+<div class="main">
+
+<!-- ════════════════════════════════ DASHBOARD PAGE ════════════════════ -->
+<div id="page-dashboard" class="page active">
+
+  <!-- Stats -->
+  <div class="stats-grid" id="stats-grid">
+    <div class="stat-card blue"><div class="stat-num" id="s-total">—</div><div class="stat-label">Total Runs</div></div>
+    <div class="stat-card green"><div class="stat-num" id="s-fixed">—</div><div class="stat-label">Auto-Fixed ✅</div></div>
+    <div class="stat-card orange"><div class="stat-num" id="s-guide">—</div><div class="stat-label">Guide Posted 📋</div></div>
+    <div class="stat-card red"><div class="stat-num" id="s-error">—</div><div class="stat-label">Failed ❌</div></div>
+    <div class="stat-card purple"><div class="stat-num" id="s-rate">—%</div><div class="stat-label">Fix Rate</div></div>
+  </div>
+
+  <!-- Recent runs -->
+  <div class="card">
+    <div class="section-header">
+      <div class="card-title">🕐 Recent Runs</div>
+      <button class="btn btn-ghost btn-sm" onclick="loadDashboard()">↻ Refresh</button>
+    </div>
+    <div id="recent-runs-wrap">
+      <div class="empty"><div class="empty-icon">🤖</div><p>No runs yet. Click <strong>Analyze</strong> to get started.</p></div>
+    </div>
+  </div>
+
+  <!-- Quick analyze -->
+  <div class="card">
+    <div class="card-title">⚡ Quick Analyze</div>
+    <div class="form-grid">
+      <div class="field">
+        <label>GitHub Repo</label>
+        <input id="q-repo" placeholder="owner/repo-name" />
+      </div>
+      <div class="field">
+        <label>PR Number (optional)</label>
+        <input id="q-pr" type="number" placeholder="e.g. 42" />
+      </div>
+      <div class="field">
+        <label>Failed Run ID (optional)</label>
+        <input id="q-runid" placeholder="e.g. 12345678901" />
+      </div>
+      <div class="field">
+        <label>Platform</label>
+        <select id="q-platform">
+          <option value="github-actions">GitHub Actions</option>
+          <option value="jenkins">Jenkins</option>
+          <option value="gitlab">GitLab CI</option>
+          <option value="generic">Generic</option>
+        </select>
+      </div>
+    </div>
+    <div style="margin-top:16px">
+      <button class="btn btn-primary" onclick="quickAnalyze()">🤖 Analyze Now</button>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════ ANALYZE PAGE ══════════════════════ -->
+<div id="page-analyze" class="page">
+  <div class="section-header">
+    <div class="section-title">▶️ Run Analysis</div>
+  </div>
+
+  <div class="card">
+    <div class="tab-bar">
+      <button class="tab active" onclick="switchTab('tab-auto',this)">🔗 From GitHub Run ID</button>
+      <button class="tab" onclick="switchTab('tab-paste',this)">📋 Paste Error Log</button>
+    </div>
+
+    <!-- Tab: auto -->
+    <div id="tab-auto">
+      <div class="form-grid">
+        <div class="field">
+          <label>GitHub Repository *</label>
+          <input id="a-repo" placeholder="owner/repo-name e.g. myorg/snake-game" />
+        </div>
+        <div class="field">
+          <label>Platform</label>
+          <select id="a-platform">
+            <option value="github-actions">GitHub Actions</option>
+            <option value="jenkins">Jenkins</option>
+            <option value="gitlab">GitLab CI</option>
+            <option value="generic">Generic</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Failed Workflow Run ID *</label>
+          <input id="a-runid" placeholder="Copy from the failing run's URL" />
+        </div>
+        <div class="field">
+          <label>PR Number (optional but recommended)</label>
+          <input id="a-pr" type="number" placeholder="e.g. 7" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: paste -->
+    <div id="tab-paste" style="display:none">
+      <div class="form-grid">
+        <div class="field">
+          <label>GitHub Repository *</label>
+          <input id="p-repo" placeholder="owner/repo-name" />
+        </div>
+        <div class="field">
+          <label>Platform</label>
+          <select id="p-platform">
+            <option value="github-actions">GitHub Actions</option>
+            <option value="jenkins">Jenkins</option>
+            <option value="gitlab">GitLab CI</option>
+            <option value="generic">Generic</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>PR Number (optional)</label>
+          <input id="p-pr" type="number" placeholder="e.g. 7" />
+        </div>
+        <div class="field field-full">
+          <label>Paste Error Log *</label>
+          <textarea id="p-log" placeholder="Paste your full CI/CD error log here..."></textarea>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:20px;display:flex;gap:12px;align-items:center">
+      <button id="analyze-btn" class="btn btn-primary" onclick="runAnalysis()">🤖 Start Analysis</button>
+      <span id="analyze-status" style="color:var(--muted);font-size:.875rem"></span>
+    </div>
+  </div>
+
+  <!-- Live log stream -->
+  <div id="live-log-card" class="card" style="display:none">
+    <div class="card-title">
+      <span class="pulse"></span> Live Agent Log
+    </div>
+    <div id="live-log">Waiting for agent output...</div>
+    <div id="live-result" style="margin-top:16px;display:none"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════ RUNS PAGE ═════════════════════════ -->
+<div id="page-runs" class="page">
+  <div class="section-header">
+    <div class="section-title">📋 All Runs</div>
+    <button class="btn btn-ghost btn-sm" onclick="loadRuns()">↻ Refresh</button>
+  </div>
+  <div class="card" style="padding:0;overflow:hidden">
+    <div id="runs-wrap">
+      <div class="empty" style="padding:40px"><div class="empty-icon">📋</div><p>No runs yet.</p></div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════ INSTALL PAGE ══════════════════════ -->
+<div id="page-install" class="page">
+  <div class="section-header">
+    <div class="section-title">⚙️ Install Agent Into Another Repo</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🤖 How It Works After Install</div>
+    <div style="background:var(--surface2);border-radius:8px;padding:20px;font-family:monospace;font-size:.82rem;line-height:2;color:#d0d7de">
+      Developer pushes code → PR opens<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;↓<br>
+      Your CI pipeline runs (tests, build, lint…)<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;↓ &nbsp;❌ FAILS<br>
+      <span style="color:var(--blue)">cicd-agent.yml triggers automatically</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;↓<br>
+      Agent downloads log + reads PR diff<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;↓<br>
+      GPT-4 identifies root cause<br>
+      &nbsp;&nbsp;&nbsp;&nbsp;↓<br>
+      <span style="color:var(--green)">✅ Commits fix to PR branch → CI re-runs</span><br>
+      &nbsp;&nbsp;&nbsp;&nbsp;OR<br>
+      <span style="color:var(--orange)">📋 Posts step-by-step solution guide on PR</span>
+    </div>
+  </div>
+
+  <!-- Copy files section -->
+  <div class="card">
+    <div class="card-title">📂 Option A — Copy Files Locally</div>
+    <div class="field" style="margin-bottom:16px">
+      <label>Target Repo Path (absolute local path)</label>
+      <div style="display:flex;gap:10px">
+        <input id="install-path" placeholder="e.g. /Users/you/snake-game" style="flex:1" />
+        <button class="btn btn-success" onclick="installToRepo()">📦 Install</button>
+      </div>
+    </div>
+    <div id="install-result"></div>
+  </div>
+
+  <!-- Manual steps -->
+  <div class="card">
+    <div class="card-title">📋 Option B — Manual Steps (for any remote repo)</div>
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h3>Copy 3 things into your repo</h3>
+          <pre>cp .github/workflows/cicd-agent.yml  YOUR_REPO/.github/workflows/
+cp -r agent/   YOUR_REPO/agent/
+cp main.py requirements.txt  YOUR_REPO/</pre>
+          <p style="margin-top:8px">Then commit and push:</p>
+          <pre>git add .github/workflows/cicd-agent.yml agent/ main.py requirements.txt
+git commit -m "chore: add CI/CD error analysis agent"
+git push</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h3>Add 2 GitHub Secrets</h3>
+          <p>Go to: <strong>github.com → YOUR_REPO → Settings → Secrets → Actions</strong></p>
+          <ul style="margin-top:8px">
+            <li><code>OPENAI_API_KEY</code> — your <code>sk-...</code> key from platform.openai.com</li>
+            <li><code>AGENT_GH_TOKEN</code> — GitHub PAT with <code>repo</code> + <code>workflow</code> scopes</li>
+          </ul>
+          <p style="margin-top:8px">Create PAT at: <strong>github.com → Settings → Developer settings → Tokens (classic)</strong></p>
+        </div>
+      </div>
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h3>Done! 🎉 It's live.</h3>
+          <p>Every future CI failure in that repo will be automatically analyzed and fixed.</p>
+          <p style="margin-top:6px">Trigger manually anytime by commenting <code>/analyze</code> on any PR.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ── Run Detail Modal ─────────────────────────────────────────────────── -->
+<div class="modal-backdrop" id="modal">
+  <div class="modal">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <h2 id="modal-title">Run Detail</h2>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<!-- ── Toast ────────────────────────────────────────────────────────────── -->
+<div id="toast"></div>
+
+<script>
+// ── State ───────────────────────────────────────────────────────────────────
+let activeTab = 'tab-auto';
+let currentJobId = null;
+let sseSource = null;
+let refreshTimer = null;
+
+// ── Page navigation ──────────────────────────────────────────────────────────
+function showPage(page, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-links button').forEach(b => b.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  btn.classList.add('active');
+  if (page === 'dashboard') loadDashboard();
+  if (page === 'runs') loadRuns();
+}
+
+// ── Tab switching ────────────────────────────────────────────────────────────
+function switchTab(tab, btn) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('tab-auto').style.display = tab === 'tab-auto' ? '' : 'none';
+  document.getElementById('tab-paste').style.display = tab === 'tab-paste' ? '' : 'none';
+  activeTab = tab;
+}
+
+// ── Toast ────────────────────────────────────────────────────────────────────
+function toast(msg, type = '') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show ' + type;
+  setTimeout(() => t.className = '', 3000);
+}
+
+// ── Stats ────────────────────────────────────────────────────────────────────
+async function loadStats() {
+  try {
+    const r = await fetch('/api/stats');
+    const s = await r.json();
+    document.getElementById('s-total').textContent = s.total;
+    document.getElementById('s-fixed').textContent = s.fixed;
+    document.getElementById('s-guide').textContent = s.guide;
+    document.getElementById('s-error').textContent = s.errors;
+    document.getElementById('s-rate').textContent = s.fix_rate + '%';
+  } catch {}
+}
+
+// ── Badge ────────────────────────────────────────────────────────────────────
+function badge(status) {
+  const map = {
+    success: ['badge-success', '✅ Auto-Fixed'],
+    guide:   ['badge-guide',   '📋 Guide Posted'],
+    error:   ['badge-error',   '❌ Failed'],
+    running: ['badge-running', '🔄 Running'],
+    queued:  ['badge-queued',  '⏳ Queued'],
+  };
+  const [cls, label] = map[status] || ['badge-queued', status];
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const diff = Math.floor((Date.now() - new Date(iso)) / 1000);
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff/60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff/3600) + 'h ago';
+  return Math.floor(diff/86400) + 'd ago';
+}
+
+// ── Dashboard ────────────────────────────────────────────────────────────────
+async function loadDashboard() {
+  await loadStats();
+  try {
+    const r = await fetch('/api/runs');
+    const runs = await r.json();
+    const wrap = document.getElementById('recent-runs-wrap');
+    if (!runs.length) {
+      wrap.innerHTML = '<div class="empty"><div class="empty-icon">🤖</div><p>No runs yet. Click <strong>Analyze</strong> to get started.</p></div>';
+      return;
+    }
+    wrap.innerHTML = runsTable(runs.slice(0, 10));
+  } catch(e) { console.error(e); }
+}
+
+function runsTable(runs) {
+  const rows = runs.map(r => `
+    <tr style="cursor:pointer" onclick="showRunDetail('${r.job_id}')">
+      <td class="repo-name">${r.repo}</td>
+      <td>${badge(r.status)}</td>
+      <td>${r.platform || '—'}</td>
+      <td>${r.pr_number ? '#'+r.pr_number : '—'}</td>
+      <td>${r.errors_count != null ? r.errors_count : '—'}</td>
+      <td class="time-ago">${timeAgo(r.queued_at)}</td>
+      <td>
+        <button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();deleteRun('${r.job_id}')">🗑</button>
+      </td>
+    </tr>`).join('');
+  return `<table class="runs-table">
+    <thead><tr>
+      <th>Repo</th><th>Status</th><th>Platform</th><th>PR</th><th>Errors</th><th>Time</th><th></th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ── All Runs ─────────────────────────────────────────────────────────────────
+async function loadRuns() {
+  try {
+    const r = await fetch('/api/runs');
+    const runs = await r.json();
+    const wrap = document.getElementById('runs-wrap');
+    if (!runs.length) {
+      wrap.innerHTML = '<div class="empty" style="padding:40px"><div class="empty-icon">📋</div><p>No runs yet.</p></div>';
+      return;
+    }
+    wrap.innerHTML = runsTable(runs);
+  } catch(e) {}
+}
+
+async function deleteRun(jobId) {
+  await fetch('/api/runs/' + jobId, { method: 'DELETE' });
+  toast('Run deleted', 'error');
+  loadRuns();
+  loadDashboard();
+}
+
+// ── Run Detail Modal ─────────────────────────────────────────────────────────
+async function showRunDetail(jobId) {
+  const r = await fetch('/api/runs/' + jobId);
+  const run = await r.json();
+  const state = run.state || {};
+
+  document.getElementById('modal-title').textContent =
+    `Run: ${run.repo} ${run.pr_number ? '· PR #'+run.pr_number : ''}`;
+
+  const errors = (state.errors || []).map(e => `
+    <li class="error-item">
+      <div class="etype">${e.error_type || 'ERROR'}</div>
+      <div class="emsg">${e.message || ''}</div>
+      ${e.file_path ? `<div class="eloc">📄 ${e.file_path}${e.line_number ? ':'+e.line_number : ''}</div>` : ''}
+    </li>`).join('');
+
+  const logs = (run.live_logs || []).filter(l => l !== '__DONE__')
+    .map(l => colourLog(l)).join('\n');
+
+  document.getElementById('modal-body').innerHTML = `
+    <div class="detail-grid">
+      <div class="detail-item"><div class="dk">Status</div><div class="dv">${badge(run.status)}</div></div>
+      <div class="detail-item"><div class="dk">Platform</div><div class="dv">${run.platform||'—'}</div></div>
+      <div class="detail-item"><div class="dk">Branch</div><div class="dv">${state.branch_name||'—'}</div></div>
+      <div class="detail-item"><div class="dk">PR URL</div><div class="dv">${state.pr_url ? `<a href="${state.pr_url}" target="_blank">View PR →</a>` : '—'}</div></div>
+      <div class="detail-item" style="grid-column:1/-1"><div class="dk">Root Cause</div>
+        <div class="dv" style="color:var(--orange)">${state.root_cause||'—'}</div></div>
+    </div>
+
+    ${errors ? `<div style="margin-bottom:16px"><strong style="font-size:.85rem">🐛 Errors (${state.errors?.length||0})</strong>
+      <ul class="error-list" style="margin-top:8px">${errors}</ul></div>` : ''}
+
+    ${state.solution_guide ? `<div style="margin-bottom:16px"><strong style="font-size:.85rem">📋 Solution Guide</strong>
+      <div class="solution-guide" style="margin-top:8px">${state.solution_guide}</div></div>` : ''}
+
+    <div><strong style="font-size:.85rem">🔎 Agent Log</strong>
+      <div class="terminal" style="margin-top:8px">${logs || '<span style="color:var(--muted)">No logs</span>'}</div>
+    </div>`;
+
+  document.getElementById('modal').classList.add('open');
+}
+
+function colourLog(line) {
+  if (line.includes('✅') || line.includes('success') || line.includes('Fix committed'))
+    return `<span class="log-ok">${esc(line)}</span>`;
+  if (line.includes('❌') || line.includes('error') || line.includes('ERROR'))
+    return `<span class="log-err">${esc(line)}</span>`;
+  if (line.includes('WARNING') || line.includes('warn') || line.includes('📋'))
+    return `<span class="log-warn">${esc(line)}</span>`;
+  if (line.includes('Fetch') || line.includes('Start') || line.includes('Analys'))
+    return `<span class="log-info">${esc(line)}</span>`;
+  return esc(line);
+}
+
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function closeModal() {
+  document.getElementById('modal').classList.remove('open');
+}
+document.getElementById('modal').addEventListener('click', e => {
+  if (e.target === document.getElementById('modal')) closeModal();
+});
+
+// ── Quick Analyze (from dashboard) ──────────────────────────────────────────
+async function quickAnalyze() {
+  const repo = document.getElementById('q-repo').value.trim();
+  if (!repo) { toast('Enter a repo name', 'error'); return; }
+  const body = {
+    repo,
+    platform: document.getElementById('q-platform').value,
+    run_id:   document.getElementById('q-runid').value || null,
+    pr_number: parseInt(document.getElementById('q-pr').value) || null,
+  };
+  const r = await fetch('/api/analyze', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+  const j = await r.json();
+  toast('Analysis started! Job: ' + j.job_id, 'success');
+  setTimeout(loadDashboard, 1000);
+  showPage('analyze', document.querySelector('.nav-links button:nth-child(2)'));
+  startLiveStream(j.job_id);
+}
+
+// ── Full Analyze ─────────────────────────────────────────────────────────────
+async function runAnalysis() {
+  const btn = document.getElementById('analyze-btn');
+  const status = document.getElementById('analyze-status');
+
+  let body;
+  if (activeTab === 'tab-auto') {
+    const repo = document.getElementById('a-repo').value.trim();
+    if (!repo) { toast('Enter a repo name', 'error'); return; }
+    body = {
+      repo,
+      platform: document.getElementById('a-platform').value,
+      run_id:   document.getElementById('a-runid').value || null,
+      pr_number: parseInt(document.getElementById('a-pr').value) || null,
+    };
+  } else {
+    const repo = document.getElementById('p-repo').value.trim();
+    const log  = document.getElementById('p-log').value.trim();
+    if (!repo) { toast('Enter a repo name', 'error'); return; }
+    if (!log)  { toast('Paste an error log', 'error'); return; }
+    body = {
+      repo,
+      platform:   document.getElementById('p-platform').value,
+      pr_number:  parseInt(document.getElementById('p-pr').value) || null,
+      error_log:  log,
+    };
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> Starting…';
+  status.textContent = '';
+
+  try {
+    const r = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    toast('Analysis started! Job: ' + j.job_id, 'success');
+    status.textContent = 'Job ID: ' + j.job_id;
+    startLiveStream(j.job_id);
+  } catch(e) {
+    toast('Failed to start: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '🤖 Start Analysis';
+  }
+}
+
+// ── SSE Live Log ─────────────────────────────────────────────────────────────
+function startLiveStream(jobId) {
+  currentJobId = jobId;
+  if (sseSource) sseSource.close();
+
+  const card = document.getElementById('live-log-card');
+  const logEl = document.getElementById('live-log');
+  const resultEl = document.getElementById('live-result');
+
+  card.style.display = '';
+  logEl.textContent = '';
+  resultEl.style.display = 'none';
+
+  sseSource = new EventSource('/api/stream/' + jobId);
+  sseSource.onmessage = async (e) => {
+    if (e.data === '__DONE__') {
+      sseSource.close();
+      // Load final result
+      try {
+        const r = await fetch('/api/runs/' + jobId);
+        const run = await r.json();
+        const state = run.state || {};
+        let html = '';
+        if (run.status === 'success') {
+          html = `<div style="background:#0f3d1d;border:1px solid #1a5c2a;border-radius:8px;padding:16px">
+            <strong style="color:var(--green)">✅ Auto-fix applied!</strong><br>
+            <span style="color:var(--muted);font-size:.875rem">Branch: <code>${state.branch_name||'—'}</code></span>
+            ${state.pr_url ? `<br><a href="${state.pr_url}" target="_blank" style="font-size:.875rem">View PR →</a>` : ''}
+          </div>`;
+        } else if (run.status === 'guide') {
+          html = `<div style="background:#2a1f00;border:1px solid #4a3800;border-radius:8px;padding:16px">
+            <strong style="color:var(--orange)">📋 Solution guide posted on PR</strong><br>
+            <span style="color:var(--muted);font-size:.875rem">Root cause: ${state.root_cause||'—'}</span>
+          </div>`;
+        } else if (run.status === 'error') {
+          html = `<div style="background:#2d0f0e;border:1px solid #5a1f1e;border-radius:8px;padding:16px">
+            <strong style="color:var(--danger)">❌ Analysis failed</strong><br>
+            <span style="color:var(--muted);font-size:.875rem">${run.error||'Check logs above'}</span>
+          </div>`;
+        }
+        resultEl.innerHTML = html;
+        resultEl.style.display = '';
+        loadDashboard();
+      } catch {}
+      return;
+    }
+    const line = document.createElement('div');
+    line.innerHTML = colourLog(e.data);
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  sseSource.onerror = () => sseSource.close();
+}
+
+// ── Install ───────────────────────────────────────────────────────────────────
+async function installToRepo() {
+  const path = document.getElementById('install-path').value.trim();
+  if (!path) { toast('Enter a target path', 'error'); return; }
+  const resultEl = document.getElementById('install-result');
+  resultEl.innerHTML = '<span class="spinner"></span> Installing…';
+  try {
+    const r = await fetch('/api/install', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({target_path: path})
+    });
+    const j = await r.json();
+    if (r.ok) {
+      resultEl.innerHTML = `<div style="background:#0f3d1d;border:1px solid #1a5c2a;border-radius:8px;padding:16px;margin-top:12px">
+        <strong style="color:var(--green)">✅ Agent installed successfully!</strong><br><br>
+        <span style="font-size:.85rem;color:var(--muted)">Files copied:</span><br>
+        ${j.files.map(f => `<code style="display:block;margin-top:4px">${f}</code>`).join('')}
+        <br>
+        <strong style="font-size:.875rem">Next steps:</strong>
+        <ol style="margin-top:8px;padding-left:18px;font-size:.85rem;color:var(--muted);line-height:2">
+          <li>cd ${path}</li>
+          <li>git add . && git commit -m "chore: add CI/CD agent" && git push</li>
+          <li>Add <code>OPENAI_API_KEY</code> and <code>AGENT_GH_TOKEN</code> secrets in GitHub</li>
+        </ol>
+      </div>`;
+      toast('✅ Installed!', 'success');
+    } else {
+      resultEl.innerHTML = `<div style="color:var(--danger)">${j.detail||'Install failed'}</div>`;
+    }
+  } catch(e) {
+    resultEl.innerHTML = `<div style="color:var(--danger)">${e.message}</div>`;
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadDashboard();
+// Auto-refresh stats every 10s
+setInterval(loadDashboard, 10000);
+</script>
+</body>
+</html>

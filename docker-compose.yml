@@ -1,0 +1,17 @@
+version: "3.9"
+
+services:
+  cicd-agent-ui:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - DEFAULT_BASE_BRANCH=${DEFAULT_BASE_BRANCH:-main}
+      - MAX_FIX_ATTEMPTS=${MAX_FIX_ATTEMPTS:-3}
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./agent:/app/agent       # hot-reload agent code without rebuild

@@ -1,0 +1,13 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run CI/CD Agent",
+			"type": "shell",
+			"command": "/Users/rohitworld/Documents/AGENT/agent-1/.venv/bin/python main.py --help",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		}
+	]
+}

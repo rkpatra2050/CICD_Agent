@@ -1,0 +1,21 @@
+# Render.com deployment config
+# https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: cicd-agent-dashboard
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false          # set manually in Render dashboard
+      - key: GITHUB_TOKEN
+        sync: false          # set manually in Render dashboard
+      - key: DEFAULT_BASE_BRANCH
+        value: main
+      - key: MAX_FIX_ATTEMPTS
+        value: "3"
+      - key: LOG_LEVEL
+        value: INFO
+    healthCheckPath: /api/health
+    autoDeploy: true

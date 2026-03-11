@@ -1,0 +1,433 @@
+# ═══════════════════════════════════════════════════════════════════════════
+#  CI/CD Pipeline Error Analysis AI Agent — GitHub Actions Workflow
+#
+#  HOW IT WORKS (automatic, zero manual steps):
+#  ─────────────────────────────────────────────
+#  1. Developer pushes code / opens a PR
+#  2. Your normal CI pipeline runs (tests, lint, build…)
+#  3. If it FAILS → this agent wakes up automatically
+#  4. Agent downloads the failed log + reads the PR diff
+#     (exactly what lines the developer changed)
+#  5. GPT-4 analyses: "what did the developer break and why?"
+#  6. Agent patches the broken file(s) and commits the fix
+#     directly onto the developer's PR branch
+#  7. CI re-runs on the PR automatically with the fix applied
+#  8. Agent posts a detailed comment on the PR explaining
+#     the root cause, what was fixed, and how to verify
+#  9. If auto-fix isn't safe → posts a full step-by-step
+#     solution guide as a PR comment instead
+#
+#  INSTALL IN ANY REPO (3 steps):
+#  ────────────────────────────────
+#  Step 1: Copy this file → .github/workflows/cicd-agent.yml
+#  Step 2: Add GitHub Secrets (Settings → Secrets → Actions):
+#            OPENAI_API_KEY  = your OpenAI API key
+#            AGENT_GH_TOKEN  = GitHub PAT with scopes:
+#                              repo, pull_requests, actions, workflow
+#  Step 3: Push — works automatically from now on
+#
+#  MANUAL TRIGGER:
+#  ───────────────
+#  - Go to Actions tab → "CI/CD Error Analysis Agent" → Run workflow
+#  - Or type  /analyze  as a comment on any failing PR
+# ═══════════════════════════════════════════════════════════════════════════
+
+name: 🤖 CI/CD Error Analysis Agent
+
+on:
+  # ── AUTO: triggers whenever any other workflow in this repo fails ──────
+  workflow_run:
+    workflows: ["*"]          # watches ALL your CI workflows
+    types: [completed]
+
+  # ── MANUAL: paste a run-id or raw error log and click "Run workflow" ───
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Failed workflow run ID (copy from the Actions URL)"
+        required: false
+        type: string
+      pr_number:
+        description: "PR number (optional — agent will fix on that branch)"
+        required: false
+        type: string
+      error_log:
+        description: "Paste the raw error log here (alternative to run_id)"
+        required: false
+        type: string
+      platform:
+        description: "CI/CD platform"
+        required: false
+        default: "github-actions"
+        type: choice
+        options: [github-actions, jenkins, gitlab, generic]
+
+  # ── PR COMMENT: type /analyze in any PR comment to trigger ────────────
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write          # commit fixes to PR branch
+  pull-requests: write     # post + update PR comments
+  actions: read            # download workflow run logs
+  issues: write            # add labels
+
+# ──────────────────────────────────────────────────────────────────────────
+jobs:
+# ──────────────────────────────────────────────────────────────────────────
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  JOB 1 — GATE: resolve trigger and decide whether to run
+  # ════════════════════════════════════════════════════════════════════════
+  gate:
+    name: 🚦 Resolve Trigger
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.resolve.outputs.should_run }}
+      run_id:     ${{ steps.resolve.outputs.run_id }}
+      pr_number:  ${{ steps.resolve.outputs.pr_number }}
+      platform:   ${{ steps.resolve.outputs.platform }}
+      has_log:    ${{ steps.resolve.outputs.has_log }}
+
+    steps:
+      - name: Resolve trigger inputs
+        id: resolve
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.AGENT_GH_TOKEN }}
+          script: |
+            const event = context.eventName;
+            let should_run = false;
+            let run_id    = '';
+            let pr_number = '';
+            let platform  = 'github-actions';
+            let has_log   = false;
+
+            // ── Automatic: another workflow failed ────────────────────────
+            if (event === 'workflow_run') {
+              const wf = context.payload.workflow_run;
+              if (wf.conclusion === 'failure' &&
+                  !wf.name.includes('CI/CD Error Analysis Agent')) {
+                should_run = true;
+                run_id     = String(wf.id);
+                pr_number  = wf.pull_requests?.[0]?.number
+                             ? String(wf.pull_requests[0].number) : '';
+                core.info(`Auto-triggered by failed run ${run_id}, PR ${pr_number}`);
+              } else {
+                core.info(`Skipping: conclusion=${wf.conclusion} name="${wf.name}"`);
+              }
+            }
+
+            // ── Manual dispatch ───────────────────────────────────────────
+            if (event === 'workflow_dispatch') {
+              const inputs = context.payload.inputs || {};
+              should_run = true;
+              run_id     = inputs.run_id    || '';
+              pr_number  = inputs.pr_number || '';
+              platform   = inputs.platform  || 'github-actions';
+              has_log    = !!(inputs.error_log && inputs.error_log.trim());
+              core.info(`Manual dispatch: run_id=${run_id} pr=${pr_number} has_log=${has_log}`);
+            }
+
+            // ── PR comment: /analyze ──────────────────────────────────────
+            if (event === 'issue_comment') {
+              const body = (context.payload.comment?.body || '').trim();
+              if (body.startsWith('/analyze') &&
+                  context.payload.issue?.pull_request) {
+                should_run = true;
+                pr_number  = String(context.payload.issue.number);
+                const parts = body.split(/\s+/);
+                if (parts[1] && /^\d+$/.test(parts[1])) run_id = parts[1];
+                core.info(`/analyze comment on PR ${pr_number}`);
+                await github.rest.reactions.createForIssueComment({
+                  owner:      context.repo.owner,
+                  repo:       context.repo.repo,
+                  comment_id: context.payload.comment.id,
+                  content:    'eyes',
+                });
+              }
+            }
+
+            core.setOutput('should_run', String(should_run));
+            core.setOutput('run_id',     run_id);
+            core.setOutput('pr_number',  pr_number);
+            core.setOutput('platform',   platform);
+            core.setOutput('has_log',    String(has_log));
+
+  # ════════════════════════════════════════════════════════════════════════
+  #  JOB 2 — ANALYZE & FIX
+  # ════════════════════════════════════════════════════════════════════════
+  analyze-and-fix:
+    name: 🤖 Analyze & Auto-Fix
+    runs-on: ubuntu-latest
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
+
+    env:
+      OPENAI_API_KEY:      ${{ secrets.OPENAI_API_KEY }}
+      GITHUB_TOKEN:        ${{ secrets.AGENT_GH_TOKEN }}
+      DEFAULT_BASE_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+      MAX_FIX_ATTEMPTS:    "3"
+      LOG_LEVEL:           "INFO"
+      RUN_ID:              ${{ needs.gate.outputs.run_id }}
+      PR_NUMBER:           ${{ needs.gate.outputs.pr_number }}
+      PLATFORM:            ${{ needs.gate.outputs.platform }}
+      HAS_LOG:             ${{ needs.gate.outputs.has_log }}
+      REPO:                ${{ github.repository }}
+
+    steps:
+
+      # ── 1. Post "Analyzing…" comment immediately on the PR ──────────────
+      - name: 💬 Post "Analyzing…" comment on PR
+        if: env.PR_NUMBER != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.AGENT_GH_TOKEN }}
+          script: |
+            const pr = parseInt(process.env.PR_NUMBER);
+            const { data: comment } = await github.rest.issues.createComment({
+              owner:        context.repo.owner,
+              repo:         context.repo.repo,
+              issue_number: pr,
+              body: [
+                '## 🤖 CI/CD Error Analysis Agent',
+                '',
+                '> **Status:** 🔄 Analyzing your pipeline failure…',
+                '',
+                `| Field | Value |`,
+                `|---|---|`,
+                `| **Platform** | \`${process.env.PLATFORM}\` |`,
+                `| **Run ID**   | \`${process.env.RUN_ID || 'detecting…'}\` |`,
+                `| **PR**       | #${pr} |`,
+                '',
+                '_This comment will be updated with the full analysis and fix._',
+              ].join('\n'),
+            });
+            core.exportVariable('AGENT_COMMENT_ID', String(comment.id));
+
+      # ── 2. Checkout ──────────────────────────────────────────────────────
+      - name: 📥 Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.AGENT_GH_TOKEN }}
+          fetch-depth: 0
+
+      # ── 3. Python ────────────────────────────────────────────────────────
+      - name: 🐍 Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # ── 4. Install agent dependencies ────────────────────────────────────
+      - name: 📦 Install dependencies
+        run: pip install -r requirements.txt
+
+      # ── 5. Save pasted log (manual dispatch only) ────────────────────────
+      - name: 📝 Save pasted error log
+        if: env.HAS_LOG == 'true'
+        run: |
+          cat << 'LOGEOF' > /tmp/pasted_error.log
+          ${{ github.event.inputs.error_log }}
+          LOGEOF
+          echo "LOG_FILE=/tmp/pasted_error.log" >> $GITHUB_ENV
+
+      # ── 6. Auto-detect latest failed run if no run_id given ──────────────
+      - name: 🔍 Auto-detect failed run ID
+        if: env.RUN_ID == '' && env.LOG_FILE == ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.AGENT_GH_TOKEN }}
+          script: |
+            const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner:    context.repo.owner,
+              repo:     context.repo.repo,
+              status:   'failure',
+              per_page: 5,
+            });
+            const latest = data.workflow_runs
+              .filter(r => !r.name.includes('CI/CD Error Analysis Agent'))[0];
+            if (latest) {
+              core.exportVariable('RUN_ID', String(latest.id));
+              core.info(`Auto-detected failed run: ${latest.id} — ${latest.name}`);
+            } else {
+              core.warning('No recent failed run found');
+            }
+
+      # ── 7. Run the AI agent ──────────────────────────────────────────────
+      - name: 🤖 Run AI Agent
+        id: agent
+        run: |
+          set +e
+          OUTPUT=/tmp/agent_state.json
+
+          ARGS="--repo $REPO --platform $PLATFORM --output $OUTPUT"
+          [ -n "$PR_NUMBER" ] && ARGS="$ARGS --pr-number $PR_NUMBER"
+
+          if [ -n "$LOG_FILE" ]; then
+            echo "▶ Mode: pasted log"
+            python main.py analyze $ARGS --log-file "$LOG_FILE" 2>&1 | tee /tmp/agent_output.txt
+          elif [ -n "$RUN_ID" ]; then
+            echo "▶ Mode: GitHub Actions run $RUN_ID"
+            python main.py analyze $ARGS --run-id "$RUN_ID" 2>&1 | tee /tmp/agent_output.txt
+          else
+            echo "❌ No run_id or log available"
+            exit 1
+          fi
+
+          echo "exit_code=$?" >> $GITHUB_OUTPUT
+
+      # ── 8. Update PR comment with full results ───────────────────────────
+      - name: 📊 Update PR comment with results
+        if: always() && env.PR_NUMBER != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.AGENT_GH_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const pr = parseInt(process.env.PR_NUMBER);
+
+            let state = {};
+            try {
+              state = JSON.parse(fs.readFileSync('/tmp/agent_state.json', 'utf8'));
+            } catch (e) { core.warning('agent_state.json not found: ' + e.message); }
+
+            // ── Errors list ───────────────────────────────────────────────
+            const errors = (state.errors || [])
+              .map((e, i) => {
+                const loc = e.file_path
+                  ? ` → \`${e.file_path}${e.line_number ? ':'+e.line_number : ''}\``
+                  : '';
+                return `${i+1}. **[${e.error_type}]** ${e.message.substring(0,120)}${loc}`;
+              }).join('\n') || '_No structured errors extracted_';
+
+            // ── PR changed files ──────────────────────────────────────────
+            const changedFiles = (state.pr_changed_files || [])
+              .map(f => `- \`${f}\``).join('\n') || '_none_';
+
+            // ── Patched files ─────────────────────────────────────────────
+            const fixedFiles = (() => {
+              const last = (state.fix_attempts || []).slice(-1)[0];
+              return (last?.files_changed || []).map(f => `- \`${f}\``).join('\n') || '_none_';
+            })();
+
+            const auditLog = (state.agent_log || []).join('\n');
+
+            // ── Status block ──────────────────────────────────────────────
+            let statusIcon, statusLine, fixBlock;
+
+            if (state.fix_succeeded) {
+              statusIcon = '✅';
+              statusLine = '**Auto-fix committed to this PR branch — CI will re-run automatically.**';
+              fixBlock = [
+                '### ✅ What Was Fixed',
+                '',
+                `**Branch:** \`${state.branch_name}\``,
+                '',
+                '**Files patched:**',
+                fixedFiles,
+                '',
+                '> ⚡ GitHub has already queued a new CI run on your PR.',
+                '> Review the diff in the **"Files changed"** tab, then merge when green.',
+              ].join('\n');
+            } else if (state.solution_guide) {
+              statusIcon = '📋';
+              statusLine = '**Auto-fix was not safe — full solution guide below.**';
+              fixBlock = [
+                '### 📋 Step-by-Step Solution Guide',
+                '',
+                state.solution_guide,
+              ].join('\n');
+            } else {
+              statusIcon = '❌';
+              statusLine = '**Analysis failed — check secrets or run the agent manually.**';
+              fixBlock = '_See audit log below for details._';
+            }
+
+            const runLink = process.env.RUN_ID
+              ? `[\`${process.env.RUN_ID}\`](https://github.com/${process.env.REPO}/actions/runs/${process.env.RUN_ID})`
+              : 'N/A';
+
+            const comment = [
+              `## 🤖 CI/CD Error Analysis Agent — ${statusIcon}`,
+              '',
+              `> ${statusLine}`,
+              '',
+              '---',
+              '',
+              '### 🔍 Root Cause',
+              '',
+              `> ${state.root_cause || '_Analysis unavailable_'}`,
+              '',
+              `**Confidence:** ${state.llm_analysis?.confidence || '—'}  `,
+              `**Platform:** \`${state.platform || process.env.PLATFORM}\``,
+              '',
+              '### 🐛 Detected Errors',
+              '',
+              errors,
+              '',
+              '### 📁 Files You Changed (PR diff)',
+              '',
+              changedFiles,
+              '',
+              '### 🛠️ Fix Strategy',
+              '',
+              state.fix_strategy || '_See solution guide below_',
+              '',
+              '---',
+              '',
+              fixBlock,
+              '',
+              '---',
+              '',
+              '<details>',
+              '<summary>🔎 Agent Audit Log (click to expand)</summary>',
+              '',
+              '```',
+              auditLog,
+              '```',
+              '</details>',
+              '',
+              `---`,
+              `_🤖 CI/CD Error Analysis Agent • Run ${runLink}_`,
+            ].join('\n');
+
+            // ── Update the "Analyzing…" stub comment ──────────────────────
+            const commentId = parseInt(process.env.AGENT_COMMENT_ID || '0');
+            if (commentId) {
+              await github.rest.issues.updateComment({
+                owner:      context.repo.owner,
+                repo:       context.repo.repo,
+                comment_id: commentId,
+                body:       comment,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: pr,
+                body:         comment,
+              });
+            }
+
+            // ── Add PR label ──────────────────────────────────────────────
+            const label = state.fix_succeeded ? 'auto-fixed 🤖' : 'needs-review 👀';
+            try {
+              await github.rest.issues.addLabels({
+                owner:        context.repo.owner,
+                repo:         context.repo.repo,
+                issue_number: pr,
+                labels:       [label],
+              });
+            } catch { /* label may not exist yet — ignore */ }
+
+      # ── 9. Upload artifacts ──────────────────────────────────────────────
+      - name: 📤 Upload agent artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-analysis-run-${{ github.run_id }}
+          path: |
+            /tmp/agent_state.json
+            /tmp/agent_output.txt
+          retention-days: 30
